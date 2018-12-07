@@ -1,0 +1,270 @@
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <title>Pankemap</title>
+    <link rel="stylesheet" href="/leaflet.css" />
+    <script src="/leaflet-src.js"></script>
+
+    <style type="text/css">
+        html,
+        body {
+
+            padding: 0px;
+            margin: 0px;
+        }
+
+        #pankemap {
+            position: fixed;
+            top: 100px;
+            left: 0px;
+            right: 0px;
+            bottom: 0px;
+
+            /* height: calc(100vh - 100px); */
+            cursor: crosshair !important;
+        }
+
+        .leaflet-interactive {
+            cursor: crosshair !important;
+        }
+    </style>
+</head>
+
+<body>
+    <button style="float: left;" onclick="activateMarkStreet()">Straße kategorisieren</button>
+    <button style="float: left;" onclick="selectLine()">Linie markieren</button>
+    <button style="float: left;" onclick="reverseLine()">Linie umkehren</button>
+    <button style="float: left;" onclick="extendLine()">Linie verlängern</button>
+    <button style="float: left;" onclick="splitLinesegment()">Liniensegment teilen</button>
+    <button style="float: left;" onclick="joinLinesegment()">Liniensegment verbinden</button>
+    <button style="float: left;" onclick="downloadData()">Download Data</button>
+    <input type="color" onchange="colorChange(this)" />
+    <div id="pankemap"></div>
+    <script>
+        const pankemap = L.map('pankemap').setView([52.655144, 13.542847], 16);
+
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: 'Map data &copy; <a href="https://www.openstreetmap.org/">OpenStreetMap</a> contributors, <a href="https://creativecommons.org/licenses/by-sa/2.0/">CC-BY-SA</a>, Imagery © <a href="https://www.mapbox.com/">Mapbox</a>',
+            maxZoom: 19
+        }).addTo(pankemap);
+
+        const lines = [];
+        let currentLine = null;
+
+        // move one point in a line
+        let currentSelectedLatLng = null;
+
+        let feature = '';
+        function activateMarkStreet() {
+            feature = 'mark-street';
+            currentLine = L.polyline([], {weight:10,opacity:0.5});
+            lines.push(currentLine);
+            currentLine.addTo(pankemap);
+            updateLinePoints(currentLine);
+        }
+        function selectLine() {
+            feature = 'select-line';
+            currentLine = null;
+            updateLinePoints(null);
+        }
+        function reverseLine() {
+            if (!currentLine) return;
+            currentLine.setLatLngs(currentLine.getLatLngs().reverse());
+            updateLinePoints(currentLine);
+        }
+        function extendLine() {
+            feature = 'mark-street';
+        }
+        function splitLinesegment() {
+            feature = 'split-line-segment';
+        }
+        function joinLinesegment() {
+            feature = 'join-line-segment';
+        }
+        function colorChange(input) {
+            if (!currentLine) return;
+            currentLine.setStyle({color:input.value});
+        }
+        function downloadData() {
+            const data = lines.map((line) => {
+                return {
+                    options: line.options,
+                    line: line.getLatLngs().map((latlng) => {
+                        return [latlng.lat, latlng.lng];
+                    })
+                }
+            });
+            const element = document.createElement('a');
+            element.setAttribute('href', 'data:application/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(data)));
+            element.setAttribute('download', 'linien.json');
+
+            element.style.display = 'none';
+            document.body.appendChild(element);
+
+            element.click();
+            document.body.removeChild(element);
+        }
+    
+        pankemap.on('click', (event) => {
+            if ('mark-street' == feature) {
+                if (currentLine) {
+                    currentLine.addLatLng(event.latlng);
+                    updateLinePoints(currentLine);
+                }
+            // mark-street
+            } else if ('select-line' == feature) {
+                const clickPoint = L.Projection.Mercator.project(event.latlng);
+                let tDist = 20;
+                let tLine = null;
+                for (const line of lines) {
+                    const lats = line.getLatLngs();
+                    for (let i = 0; i < lats.length-1; i++) {
+                        const d = L.LineUtil.pointToSegmentDistance(clickPoint, L.Projection.Mercator.project(lats[i]), L.Projection.Mercator.project(lats[i+1]));
+                        if (d < tDist) {
+                            tDist = d;
+                            tLine = line;
+                        }
+                    }
+                }
+
+                console.log(tDist);
+                console.log(tLine);
+
+                if (tLine) {
+                    currentLine = tLine;
+                    updateLinePoints(currentLine);
+                }
+            // select-line
+            } else if ('split-line-segment' == feature) {
+                const p3 = L.Projection.Mercator.project(event.latlng);
+
+                const final = currentLine.getLatLngs().reduce( (toConsider, lat1, idx, arr) => {
+                    const lat2 = ((idx + 1 === arr.length) ? arr[0] : arr[idx+1]);
+
+                    const p1 = L.Projection.Mercator.project(lat1);
+                    const p2 = L.Projection.Mercator.project(lat2);
+
+                    const lineVec = p2.subtract(p1);
+                    const clickVec = p3.subtract(p1);
+
+                    // if longer than segment continue
+                    if (lineVec.x ** 2 + lineVec.y ** 2 < clickVec.x ** 2 + clickVec.y ** 2) {
+                        return toConsider;
+                    }
+
+                    const data = {
+                        idx: idx,
+                        segmentDistance: L.LineUtil.pointToSegmentDistance(clickVec, L.point(0,0), lineVec),
+                        lineVec, clickVec
+                    };
+
+                    // check all 4 quadrants
+                    if (0 <= lineVec.x && 0 <= lineVec.y &&
+                        0 <= clickVec.x && 0 <= clickVec.y) {
+                        toConsider.push(data);
+
+                    } else if (0 <= lineVec.x && 0 > lineVec.y &&
+                            0 <= clickVec.x && 0 > clickVec.y) {
+                        toConsider.push(data);
+
+                    } else if(0 > lineVec.x && 0 > lineVec.y &&
+                            0 > clickVec.x && 0 > clickVec.y) {
+                        toConsider.push(data);
+
+                    } else if(0 > lineVec.x && 0 <= lineVec.y &&
+                            0 > clickVec.x && 0 <= clickVec.y) {
+                        toConsider.push(data);
+                    }
+                    return toConsider;
+                }, [])
+                .sort( (a, b) => a.segmentDistance > b.segmentDistance)[0]; // for
+
+                const lats = currentLine.getLatLngs();
+                lats.splice(final.idx + 1, 0, event.latlng);
+                currentLine.setLatLngs(lats);
+                updateLinePoints(currentLine);
+                moveCircle.remove();
+                moveCircle.addTo(pankemap);
+                moveCircle.setLatLng(event.latlng);
+            // split-line-segment
+            } else if ('join-line-segment' == feature) {
+                if (!currentSelectedLatLng) return;
+                const lats = currentLine.getLatLngs();
+                const idx = lats.indexOf(currentSelectedLatLng);
+                lats.splice(idx, 1);
+                currentLine.setLatLngs(lats);
+                updateLinePoints(currentLine);
+            }
+        });
+
+        const moveCircle = L.circle([0, 0], { radius: 20 });
+        let inCircleMouseDown = false;
+
+        moveCircle.on('mousemove', (event) => {
+            if (!inCircleMouseDown || null == currentSelectedLatLng) return;
+
+            const lats = currentLine.getLatLngs();
+            const idx = lats.indexOf(currentSelectedLatLng);
+
+            lats.splice(idx, 1, event.latlng);
+            currentLine.setLatLngs(lats);
+            moveCircle.setLatLng(event.latlng);
+            updateLinePoints(currentLine);
+        });
+
+        moveCircle.on('mousedown', () => {
+            pankemap.dragging.disable();
+            inCircleMouseDown = true;
+        });
+
+        moveCircle.on('mouseup', () => {
+            pankemap.dragging.enable();
+            inCircleMouseDown = false;
+        });
+
+
+        pankemap.on('mousemove', (event) => {
+            let dLine = null;
+            let dLatlng = null;
+            let dist = 99;
+
+            if (null == currentLine) return;
+
+            for (const latlng of currentLine.getLatLngs()) {
+                const d = pankemap.distance(latlng, event.latlng);
+                if (d < dist) {
+                    dist = d;
+                    dLatlng = latlng;
+                }
+            }
+
+            moveCircle.remove();
+            currentSelectedLatLng = null;
+
+            if (dist <= 20) {
+                currentSelectedLatLng = dLatlng;
+
+                moveCircle.setLatLng(dLatlng);
+                moveCircle.addTo(pankemap);
+            }
+        });
+
+        const linePoints = [];
+        function updateLinePoints(line) {
+            for (const point of linePoints) point.remove();
+
+            linePoints.length = 0;
+            if (null == line) return;
+            for (const lat of line.getLatLngs()) {
+                const l = L.circle(lat, { radius: 3, color: '#ff0' }).addTo(pankemap);
+                linePoints.push(l);
+            }
+
+            linePoints[0].setStyle({color:'#f00'});
+            linePoints[linePoints.length-1].setStyle({color:'#00f'});
+        }
+    </script>
+</body>
+
+</html>

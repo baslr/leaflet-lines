@@ -39,10 +39,14 @@
     <button style="float: left;" onclick="splitLinesegment()">Liniensegment teilen</button>
     <button style="float: left;" onclick="joinLinesegment()">Liniensegment verbinden</button>
     <button style="float: left;" onclick="downloadData()">Download Data</button>
+    <input type="file" accept=".json" onchange="uploadFile(this.files[0])" id="file-upload" hidden />
+    <label for="file-upload">Datei laden</label>
+
     <input type="color" onchange="colorChange(this)" />
     <div id="pankemap"></div>
     <script>
         const pankemap = L.map('pankemap').setView([52.655144, 13.542847], 16);
+        let currentColor = '#0000ff';
 
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             attribution: 'Map data &copy; <a href="https://www.openstreetmap.org/">OpenStreetMap</a> contributors, <a href="https://creativecommons.org/licenses/by-sa/2.0/">CC-BY-SA</a>, Imagery <a href="https://www.openstreetmap.org/">OpenStreetMap</a>',
@@ -51,6 +55,7 @@
 
         const lines = [];
         let currentLine = null;
+        document.querySelector('input[type=color]').value = currentColor;
 
         // move one point in a line
         let currentSelectedLatLng = null;
@@ -58,7 +63,7 @@
         let feature = '';
         function activateMarkStreet() {
             feature = 'mark-street';
-            currentLine = L.polyline([], {weight:10,opacity:0.5});
+            currentLine = L.polyline([], {weight:10,opacity:0.5, color:currentColor});
             lines.push(currentLine);
             currentLine.addTo(pankemap);
             updateLinePoints(currentLine);
@@ -84,17 +89,18 @@
         }
         function colorChange(input) {
             if (!currentLine) return;
+            currentColor = input.value;
             currentLine.setStyle({color:input.value});
         }
         function downloadData() {
-            const data = lines.map((line) => {
+            const data = {lines:lines.map((line) => {
                 return {
                     options: line.options,
                     line: line.getLatLngs().map((latlng) => {
                         return [latlng.lat, latlng.lng];
                     })
                 }
-            });
+            }), color:currentColor };
             const element = document.createElement('a');
             element.setAttribute('href', 'data:application/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(data)));
             element.setAttribute('download', 'linien.json');
@@ -104,6 +110,27 @@
 
             element.click();
             document.body.removeChild(element);
+        }
+
+        function uploadFile(file) {
+            feature = '';
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                updateLinePoints(null);
+                for (const line of lines) {
+                    line.remove();
+                }
+                const data = JSON.parse(e.target.result);
+
+                for (const line of data.lines) {
+                    const l = L.polyline(line.line, line.options);
+                    lines.push(l);
+                    l.addTo(pankemap);
+                }
+                currentColor = data.color;
+                document.querySelector('input[type=color]').value = currentColor;
+            };
+            reader.readAsText(file, 'utf8');
         }
     
         pankemap.on('click', (event) => {
